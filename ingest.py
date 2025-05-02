@@ -2,12 +2,18 @@ from typing import Any, Dict
 
 import streamlit as st
 from langchain.document_loaders import DirectoryLoader
-from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.text_splitter import CharacterTextSplitter
-from langchain.vectorstores import SupabaseVectorStore
 from pydantic import BaseModel
-
 from supabase.client import Client, create_client
+
+# 변경 전
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.vectorstores import SupabaseVectorStore
+
+# 변경 후
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import SupabaseVectorStore
+
 
 
 class Secrets(BaseModel):

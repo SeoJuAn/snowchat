@@ -1,18 +1,49 @@
 import re
+import os
 import warnings
 
 import streamlit as st
 from snowflake.snowpark.exceptions import SnowparkSQLException
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from agent import MessagesState, create_agent
 
-# from utils.snow_connect import SnowflakeConnection
+from utils.snow_connect import SnowflakeConnection
 from utils.snowchat_ui import StreamlitUICallbackHandler, message_func
 from utils.snowddl import Snowddl
 
 warnings.filterwarnings("ignore")
 chat_history = []
 snow_ddl = Snowddl()
+
+# Read all documentation and SQL files
+def read_all_files(folder_path, file_extension):
+    """Read all files with the specified extension from the folder"""
+    contents = {}
+    if os.path.exists(folder_path):
+        for filename in os.listdir(folder_path):
+            if filename.endswith(file_extension):
+                file_path = os.path.join(folder_path, filename)
+                with open(file_path, 'r', encoding='utf-8') as file:
+                    contents[filename] = file.read()
+    return contents
+
+# Read documentation and SQL files
+docs_content = read_all_files('docs', '.md')
+sql_content = read_all_files('sql', '.sql')
+
+# Create a consolidated documentation string for the prompt
+def create_context_string():
+    context = "DOCUMENTATION FILES:\n"
+    for filename, content in docs_content.items():
+        context += f"\n### {filename} ###\n{content}\n"
+    
+    context += "\n\nSQL FILES:\n"
+    for filename, content in sql_content.items():
+        context += f"\n### {filename} ###\n{content}\n"
+    
+    return context
+
+context_string = create_context_string()
 
 gradient_text_html = """
 <style>
@@ -63,18 +94,10 @@ if "toast_shown" not in st.session_state:
 if "rate-limit" not in st.session_state:
     st.session_state["rate-limit"] = False
 
-# # Show the toast only if it hasn't been shown before
-# if not st.session_state["toast_shown"]:
-#     st.toast("The snowflake data retrieval is disabled for now.", icon="👋")
-#     st.session_state["toast_shown"] = True
-
 # Show a warning if the model is rate-limited
 if st.session_state["rate-limit"]:
     st.toast("Probably rate limited.. Go easy folks", icon="⚠️")
     st.session_state["rate-limit"] = False
-
-if st.session_state["model"] == "Deepseek R1":
-    st.warning("Deepseek R1 is highly rate limited. Please use it sparingly", icon="⚠️")
 
 INITIAL_MESSAGE = [
     {"role": "user", "content": "Hi!"},
@@ -93,11 +116,11 @@ with open("ui/styles.md", "r") as styles_file:
 
 st.sidebar.markdown(sidebar_content)
 
-selected_table = st.sidebar.selectbox(
-    "Select a table:", options=list(snow_ddl.ddl_dict.keys())
-)
-st.sidebar.markdown(f"### DDL for {selected_table} table")
-st.sidebar.code(snow_ddl.ddl_dict[selected_table], language="sql")
+# selected_table = st.sidebar.selectbox(
+#     "Select a table:", options=list(snow_ddl.ddl_dict.keys())
+# )
+# st.sidebar.markdown(f"### DDL for {selected_table} table")
+# st.sidebar.code(snow_ddl.ddl_dict[selected_table], language="sql")
 
 # Add a reset button
 if st.sidebar.button("Reset Chat"):
@@ -105,11 +128,6 @@ if st.sidebar.button("Reset Chat"):
         del st.session_state[key]
     st.session_state["messages"] = INITIAL_MESSAGE
     st.session_state["history"] = []
-
-st.sidebar.markdown(
-    "**Note:** <span style='color:red'>The snowflake data retrieval is disabled for now.</span>",
-    unsafe_allow_html=True,
-)
 
 st.write(styles_content, unsafe_allow_html=True)
 
@@ -132,11 +150,6 @@ if prompt := st.chat_input():
         st.session_state["assistant_response_processed"] = False  # Assistant response not yet processed
 
 messages_to_display = st.session_state.messages.copy()
-# if not st.session_state["assistant_response_processed"]:
-#     # Exclude the last assistant message if assistant response not yet processed
-#     if messages_to_display and messages_to_display[-1]["role"] == "assistant":
-#         print("\n\nthis is messages_to_display \n\n", messages_to_display)
-#         messages_to_display = messages_to_display[:-1]
 
 for message in messages_to_display:
     message_func(
@@ -148,51 +161,19 @@ for message in messages_to_display:
 
 callback_handler = StreamlitUICallbackHandler(model)
 
-react_graph = create_agent(callback_handler, st.session_state["model"])
-
+react_graph = create_agent(callback_handler, st.session_state["model"], context_string)
 
 def append_chat_history(question, answer):
     st.session_state["history"].append((question, answer))
 
-
 def get_sql(text):
-    sql_match = re.search(r"```sql\n(.*)\n```", text, re.DOTALL)
+    sql_match = re.search(r"```sql\n(.*?)\n```", text, re.DOTALL)
     return sql_match.group(1) if sql_match else None
-
 
 def append_message(content, role="assistant"):
     """Appends a message to the session state messages."""
     if content.strip():
         st.session_state.messages.append({"role": role, "content": content})
-
-
-def handle_sql_exception(query, conn, e, retries=2):
-    # append_message("Uh oh, I made an error, let me try to fix it..")
-    # error_message = (
-    #     "You gave me a wrong SQL. FIX The SQL query by searching the schema definition:  \n```sql\n"
-    #     + query
-    #     + "\n```\n Error message: \n "
-    #     + str(e)
-    # )
-    # new_query = chain({"question": error_message, "chat_history": ""})["answer"]
-    # append_message(new_query)
-    # if get_sql(new_query) and retries > 0:
-    #     return execute_sql(get_sql(new_query), conn, retries - 1)
-    # else:
-    #     append_message("I'm sorry, I couldn't fix the error. Please try again.")
-    #     return None
-    pass
-
-
-def execute_sql(query, conn, retries=2):
-    if re.match(r"^\s*(drop|alter|truncate|delete|insert|update)\s", query, re.I):
-        append_message("Sorry, I can't execute queries that can modify the database.")
-        return None
-    try:
-        return conn.sql(query).collect()
-    except SnowparkSQLException as e:
-        return handle_sql_exception(query, conn, e, retries)
-
 
 if (
     "messages" in st.session_state
@@ -214,17 +195,3 @@ if (
             assistant_message = callback_handler.final_message
             append_message(assistant_message)
             st.session_state["assistant_response_processed"] = True
-
-
-if (
-    st.session_state["model"] == "Mixtral 8x7B"
-    and st.session_state["messages"][-1]["content"] == ""
-):
-    st.session_state["rate-limit"] = True
-
-    # if get_sql(result):
-    #     conn = SnowflakeConnection().get_session()
-    #     df = execute_sql(get_sql(result), conn)
-    #     if df is not None:
-    #         callback_handler.display_dataframe(df)
-    #         append_message(df, "data", True)
